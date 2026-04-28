@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sumologic-mcp"
+version = "0.1.0"
+description = "MCP server exposing Sumo Logic SIEM/SOAR claim_incident and attach_note operations to Claude Desktop."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Wojtek Kura" }]
+dependencies = [
+    "mcp>=1.0",
+    "keyring>=24.0",
+    "requests>=2.31",
+    "markdown>=3.5",
+]
+
+[project.scripts]
+sumologic-mcp = "sumologic_mcp.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "types-requests",
+    "types-Markdown",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sumologic_mcp"]
