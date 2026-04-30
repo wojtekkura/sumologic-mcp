@@ -1,8 +1,6 @@
 import ipaddress
-import json
 import re
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 from sumologic_mcp.clients import state
@@ -219,7 +217,6 @@ def _pick_template(templates: list[dict], source: str) -> dict:
 def claim_incident(
     insight_id: str,
     analyst: str | None = None,
-    save_path: str | None = None,
 ) -> dict:
     """Claim a Sumo Logic SIEM Insight: fetch, assign analyst, set inprogress,
     find or create the linked Cloud SOAR incident, and return a structured triage view.
@@ -228,10 +225,12 @@ def claim_incident(
     substring match on `incident_templates/`, with a general -> default -> first
     fallback chain.
 
+    File-less: the structured triage dict is returned inline to the caller; no
+    artifacts are written to disk by this tool.
+
     Args:
         insight_id: SIEM insight ID (e.g. "INSIGHT-28592").
         analyst: Override SIEM assignee + note author. Defaults to env ANALYST_USERNAME.
-        save_path: If set, write the raw insight JSON to this path (parent dir created).
 
     Returns:
         Structured dict with insight metadata, per-signal summaries, inferred
@@ -296,13 +295,6 @@ def claim_incident(
 
     siem.link_soar_incident(insight_id, soar_id, insight_id, assignee=final_analyst)
 
-    saved_to: str | None = None
-    if save_path:
-        p = Path(save_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(insight, indent=2, default=str), encoding="utf-8")
-        saved_to = str(p)
-
     entity = insight.get("entity") or {}
     if isinstance(entity, dict):
         entity_out = {"value": entity.get("value"), "type": entity.get("entityType")}
@@ -328,5 +320,4 @@ def claim_incident(
         "flare_uids": flare_uids,
         "identities": identities,
         "ioc_candidates": iocs,
-        "saved_to": saved_to,
     }
