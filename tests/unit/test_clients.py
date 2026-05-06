@@ -151,6 +151,18 @@ class TestSIEMClient:
             assert result == []
             mock_get.assert_called_once()
 
+    def test_list_insights_default_limit_matches_sumo_api_cap(self) -> None:
+        # Regression: Sumo Logic /api/sec/v1/insights rejects limit > 50.
+        # The default must stay at 50 unless Sumo raises the cap.
+        client = self._make_client()
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {"data": {"objects": [], "hasNextPage": False}}
+        with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
+            client.list_insights("status:new")
+            params = mock_get.call_args.kwargs["params"]
+            assert params["limit"] == 50
+
     def test_extract_flare_events_empty(self) -> None:
         client = self._make_client()
         result = client.extract_flare_events({"signals": []})

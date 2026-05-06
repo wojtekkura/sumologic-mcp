@@ -47,11 +47,15 @@ class SIEMClient:
         data = self._get(f"insights/{insight_id}")
         return data.get("data", data)
 
-    def list_insights(self, q: str, limit: int = 100) -> list[dict]:
+    def list_insights(self, q: str, limit: int = 50) -> list[dict]:
         """Walk paginated `/insights` results matching the Lucene `q` filter.
 
         Stops when the server reports `hasNextPage == False` or returns a short
         page. Bounded at 100 iterations to guard against a misbehaving server.
+
+        The default `limit=50` matches Sumo Logic Cloud SIEM's hard cap on the
+        `/api/sec/v1/insights` page size; passing a larger value causes the API
+        to reject the request.
         """
         results: list[dict] = []
         offset = 0
