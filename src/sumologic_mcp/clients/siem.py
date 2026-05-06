@@ -47,28 +47,56 @@ class SIEMClient:
         data = self._get(f"insights/{insight_id}")
         return data.get("data", data)
 
-    def list_insights(self, q: str, limit: int = 50) -> list[dict]:
+    # Sumo Logic Cloud SIEM `/api/sec/v1/insights` rejects requests with
+    # `limit` above this cap. See the Demisto Cloud SIEM integration
+    # (`SumoLogicCloudSIEM.yml`, max_fetch additionalinfo) for the documented
+    # 200-row cumulative ceiling; the per-call cap observed in practice on at
+    # least the `de` deployment is 50.
+    INSIGHTS_PAGE_LIMIT_MAX = 50
+
+    def list_insights(self, q: str, limit: int = INSIGHTS_PAGE_LIMIT_MAX) -> list[dict]:
         """Walk paginated `/insights` results matching the Lucene `q` filter.
 
-        Stops when the server reports `hasNextPage == False` or returns a short
-        page. Bounded at 100 iterations to guard against a misbehaving server.
+        Sends `sort=CREATED&sortDir=ASC` on every page so concurrent insight
+        creation cannot shift records between pages and cause duplicates or
+        skips — the canonical pattern used by Sumo Logic's own Demisto/XSOAR
+        integration.
 
-        The default `limit=50` matches Sumo Logic Cloud SIEM's hard cap on the
-        `/api/sec/v1/insights` page size; passing a larger value causes the API
-        to reject the request.
+        Caps the per-page `limit` at `INSIGHTS_PAGE_LIMIT_MAX` (50): values
+        above this are silently clamped because Sumo's API rejects them with
+        a server-side error rather than truncating.
+
+        Bounded at 100 iterations × 50 rows = 5000 records per call to guard
+        against a misbehaving server. Stops early on `hasNextPage == False`,
+        an empty page, or a short page.
         """
+        page_size = min(int(limit), self.INSIGHTS_PAGE_LIMIT_MAX)
         results: list[dict] = []
         offset = 0
         for _ in range(100):
-            resp = self._get("insights", {"q": q, "limit": limit, "offset": offset})
+            resp = self._get(
+                "insights",
+                {
+                    "q": q,
+                    "limit": page_size,
+                    "offset": offset,
+                    "sort": "CREATED",
+                    "sortDir": "ASC",
+                },
+            )
             data = resp.get("data") or {}
             objects = data.get("objects") or []
             results.extend(objects)
-            if not objects or len(objects) < limit or data.get("hasNextPage") is False:
+            if (
+                not objects
+                or len(objects) < page_size
+                or data.get("hasNextPage") is False
+            ):
                 return results
             offset += len(objects)
         raise RuntimeError(
-            f"list_insights exceeded 100 pagination iterations (q={q!r}, limit={limit})"
+            f"list_insights exceeded 100 pagination iterations "
+            f"(q={q!r}, limit={page_size})"
         )
 
     def assign_insight(self, insight_id: str, username: str) -> dict:
