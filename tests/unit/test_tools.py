@@ -241,9 +241,17 @@ class TestAttachNote:
 class TestBuildQuery:
     def test_contains_required_clauses(self) -> None:
         q, cutoff = _build_query(24)
-        assert "status:new" in q
-        assert "-_exists_:assignee" in q
+        # Sumo's DSL syntax: status:"new" with quotes per the docs.
+        assert 'status:"new"' in q
         assert f"created:>{cutoff}" in q
+
+    def test_no_undocumented_assignee_filter(self) -> None:
+        # Sumo's custom DSL (docs at /docs/sec/) does not define a
+        # "field is absent" operator. The unassigned filter must happen
+        # client-side, not in `q`.
+        q, _ = _build_query(24)
+        assert "_exists_" not in q
+        assert "assignee" not in q
 
     def test_cutoff_format(self) -> None:
         _, cutoff = _build_query(24)
@@ -315,7 +323,38 @@ class TestListNewInsights:
 
         assert result["count"] == 0
         assert result["insights"] == []
-        assert "status:new" in result["query"]
+        assert 'status:"new"' in result["query"]
+
+    @patch("sumologic_mcp.tools.list_new_insights.state")
+    def test_filters_assigned_insights_client_side(
+        self, mock_state: MagicMock
+    ) -> None:
+        # Sumo's DSL has no "field is absent" operator, so unassigned
+        # filtering happens here. Anything with a truthy `assignee` must
+        # be dropped from the projection.
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.list_insights.return_value = [
+            {"readableId": "UNASSIGNED-1", "name": "kept", "signals": []},
+            {
+                "readableId": "ASSIGNED-1",
+                "name": "dropped — already assigned",
+                "assignee": {"username": "someone@test.test"},
+                "signals": [],
+            },
+            {
+                "readableId": "ASSIGNED-2",
+                "name": "dropped — string assignee",
+                "assignee": "someone@test.test",
+                "signals": [],
+            },
+            {"readableId": "UNASSIGNED-2", "name": "kept too", "signals": []},
+        ]
+
+        result = list_new_insights()
+
+        ids = [ins["insight_id"] for ins in result["insights"]]
+        assert ids == ["UNASSIGNED-1", "UNASSIGNED-2"]
+        assert result["count"] == 2
 
     @patch("sumologic_mcp.tools.list_new_insights.state")
     def test_since_hours_override_propagates_to_query(

@@ -47,56 +47,61 @@ class SIEMClient:
         data = self._get(f"insights/{insight_id}")
         return data.get("data", data)
 
-    # Sumo Logic Cloud SIEM `/api/sec/v1/insights` rejects requests with
-    # `limit` above this cap. See the Demisto Cloud SIEM integration
-    # (`SumoLogicCloudSIEM.yml`, max_fetch additionalinfo) for the documented
-    # 200-row cumulative ceiling; the per-call cap observed in practice on at
-    # least the `de` deployment is 50.
-    INSIGHTS_PAGE_LIMIT_MAX = 50
+    # `recordSummaryFields` is marked **required** on Sumo Cloud SIEM's
+    # `GET /sec/v1/insights/all`. We don't actually use the per-record
+    # summaries (the tool projects from `signals`, not `records`), so a
+    # short generic field list is sufficient to satisfy the constraint.
+    INSIGHTS_RECORD_SUMMARY_FIELDS = "device_ip,user_username"
 
-    def list_insights(self, q: str, limit: int = INSIGHTS_PAGE_LIMIT_MAX) -> list[dict]:
-        """Walk paginated `/insights` results matching the Lucene `q` filter.
+    # `expand` controls which subfields are returned. We always need
+    # `signals` because list_new_insights projects them; without this,
+    # the response omits the signals array.
+    INSIGHTS_EXPAND = "signals"
 
-        Sends `sort=CREATED&sortDir=ASC` on every page so concurrent insight
-        creation cannot shift records between pages and cause duplicates or
-        skips — the canonical pattern used by Sumo Logic's own Demisto/XSOAR
-        integration.
+    def list_insights(self, q: str) -> list[dict]:
+        """Walk paginated `/insights/all` results matching Sumo's DSL `q`.
 
-        Caps the per-page `limit` at `INSIGHTS_PAGE_LIMIT_MAX` (50): values
-        above this are silently clamped because Sumo's API rejects them with
-        a server-side error rather than truncating.
+        Sumo Logic Cloud SIEM's documented listing endpoint
+        (`GET /sec/v1/insights/all`) uses opaque `nextPageToken` pagination,
+        not offset/limit. There is no client-controllable page size; Sumo
+        decides per-page count and returns a `nextPageToken` until the
+        results are exhausted.
 
-        Bounded at 100 iterations × 50 rows = 5000 records per call to guard
-        against a misbehaving server. Stops early on `hasNextPage == False`,
-        an empty page, or a short page.
+        Per Sumo's docs, the `nextPageToken` expires one minute after issue,
+        so this loop is intentionally tight — no `time.sleep`, no caller
+        callbacks between pages.
+
+        Required parameter `recordSummaryFields` is sent with a small
+        generic default; the `expand=signals` knob ensures the response
+        carries the signals array that callers project from.
+
+        Bounded at 100 iterations to guard against a misbehaving server
+        that keeps issuing tokens forever.
         """
-        page_size = min(int(limit), self.INSIGHTS_PAGE_LIMIT_MAX)
+        base_params: dict[str, str] = {
+            "recordSummaryFields": self.INSIGHTS_RECORD_SUMMARY_FIELDS,
+            "expand": self.INSIGHTS_EXPAND,
+        }
+        if q:
+            base_params["q"] = q
+
         results: list[dict] = []
-        offset = 0
+        next_token: str | None = None
         for _ in range(100):
-            resp = self._get(
-                "insights",
-                {
-                    "q": q,
-                    "limit": page_size,
-                    "offset": offset,
-                    "sort": "CREATED",
-                    "sortDir": "ASC",
-                },
-            )
+            params = dict(base_params)
+            if next_token:
+                params["nextPageToken"] = next_token
+            resp = self._get("insights/all", params)
             data = resp.get("data") or {}
             objects = data.get("objects") or []
             results.extend(objects)
-            if (
-                not objects
-                or len(objects) < page_size
-                or data.get("hasNextPage") is False
-            ):
+            # Tokens may live in either the `data` envelope or the top
+            # level depending on the deployment; check both.
+            next_token = data.get("nextPageToken") or resp.get("nextPageToken")
+            if not next_token:
                 return results
-            offset += len(objects)
         raise RuntimeError(
-            f"list_insights exceeded 100 pagination iterations "
-            f"(q={q!r}, limit={page_size})"
+            f"list_insights exceeded 100 pagination iterations (q={q!r})"
         )
 
     def assign_insight(self, insight_id: str, username: str) -> dict:

@@ -93,98 +93,110 @@ class TestSIEMClient:
             call_args = mock_put.call_args
             assert "assignee" in call_args.kwargs.get("json", call_args[1].get("json", {}))
 
-    def test_list_insights_single_page(self) -> None:
+    def test_list_insights_hits_documented_path_and_required_params(self) -> None:
+        # Spec: GET /sec/v1/insights/all with required `recordSummaryFields`
+        # and `expand=signals`. No `limit`, no `offset`, no `sort` parameters.
         client = self._make_client()
         mock_resp = MagicMock()
         mock_resp.ok = True
         mock_resp.json.return_value = {
-            "data": {"objects": [{"id": "1"}, {"id": "2"}], "hasNextPage": False}
+            "data": {"objects": [{"id": "1"}], "nextPageToken": None}
         }
         with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
-            result = client.list_insights("status:new")
-            assert [r["id"] for r in result] == ["1", "2"]
+            client.list_insights("status:new")
             mock_get.assert_called_once()
+            url = mock_get.call_args.args[0]
+            assert url.endswith("/insights/all")
             params = mock_get.call_args.kwargs["params"]
             assert params == {
                 "q": "status:new",
-                "limit": 50,
-                "offset": 0,
-                "sort": "CREATED",
-                "sortDir": "ASC",
+                "recordSummaryFields": "device_ip,user_username",
+                "expand": "signals",
             }
+            # Forbidden params from the old offset/limit shape must not appear.
+            for forbidden in ("limit", "offset", "sort", "sortDir"):
+                assert forbidden not in params
 
-    def test_list_insights_paginates_across_two_pages(self) -> None:
+    def test_list_insights_paginates_via_next_page_token(self) -> None:
         client = self._make_client()
         first = MagicMock()
         first.ok = True
         first.json.return_value = {
             "data": {
-                "objects": [{"id": str(i)} for i in range(50)],
-                "hasNextPage": True,
+                "objects": [{"id": "a"}, {"id": "b"}],
+                "nextPageToken": "page-2-token",
             }
         }
         second = MagicMock()
         second.ok = True
         second.json.return_value = {
-            "data": {"objects": [{"id": "50"}], "hasNextPage": False}
+            "data": {"objects": [{"id": "c"}], "nextPageToken": None}
         }
         with patch.object(client.session, "get", side_effect=[first, second]) as mock_get:
             result = client.list_insights("status:new")
-            assert len(result) == 51
+            assert [r["id"] for r in result] == ["a", "b", "c"]
             assert mock_get.call_count == 2
-            second_call_params = mock_get.call_args_list[1].kwargs["params"]
-            assert second_call_params["offset"] == 50
-            # Stable-pagination params must persist across pages.
-            assert second_call_params["sort"] == "CREATED"
-            assert second_call_params["sortDir"] == "ASC"
+            # First page MUST NOT carry a token.
+            assert "nextPageToken" not in mock_get.call_args_list[0].kwargs["params"]
+            # Second page MUST carry the token from page 1's response.
+            second_params = mock_get.call_args_list[1].kwargs["params"]
+            assert second_params["nextPageToken"] == "page-2-token"
+            # Required params persist across pages.
+            assert second_params["recordSummaryFields"] == "device_ip,user_username"
+            assert second_params["expand"] == "signals"
 
-    def test_list_insights_short_page_terminates(self) -> None:
+    def test_list_insights_handles_top_level_next_page_token(self) -> None:
+        # Some deployments place `nextPageToken` at the top level of the
+        # response rather than inside the `data` envelope. Both must work.
+        client = self._make_client()
+        first = MagicMock()
+        first.ok = True
+        first.json.return_value = {
+            "data": {"objects": [{"id": "x"}]},
+            "nextPageToken": "tok",
+        }
+        second = MagicMock()
+        second.ok = True
+        second.json.return_value = {"data": {"objects": [{"id": "y"}]}}
+        with patch.object(client.session, "get", side_effect=[first, second]) as mock_get:
+            result = client.list_insights("status:new")
+            assert len(result) == 2
+            assert mock_get.call_args_list[1].kwargs["params"]["nextPageToken"] == "tok"
+
+    def test_list_insights_terminates_when_no_token(self) -> None:
         client = self._make_client()
         mock_resp = MagicMock()
         mock_resp.ok = True
-        mock_resp.json.return_value = {
-            "data": {"objects": [{"id": "1"}]}
-        }
+        mock_resp.json.return_value = {"data": {"objects": [{"id": "1"}]}}
         with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
             result = client.list_insights("status:new")
             assert len(result) == 1
             mock_get.assert_called_once()
 
-    def test_list_insights_clamps_limit_above_api_cap(self) -> None:
-        # Sumo's /api/sec/v1/insights rejects limit > 50. Callers passing a
-        # larger value must be silently clamped, not propagated to the API.
-        client = self._make_client()
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"data": {"objects": [], "hasNextPage": False}}
-        with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
-            client.list_insights("status:new", limit=500)
-            params = mock_get.call_args.kwargs["params"]
-            assert params["limit"] == 50
-
     def test_list_insights_empty(self) -> None:
         client = self._make_client()
         mock_resp = MagicMock()
         mock_resp.ok = True
-        mock_resp.json.return_value = {"data": {"objects": [], "hasNextPage": False}}
+        mock_resp.json.return_value = {"data": {"objects": []}}
         with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
             result = client.list_insights("status:new")
             assert result == []
             mock_get.assert_called_once()
 
-    def test_list_insights_default_limit_matches_sumo_api_cap(self) -> None:
-        # Regression: Sumo Logic /api/sec/v1/insights rejects limit > 50.
-        # The default must stay at 50 unless Sumo raises the cap.
+    def test_list_insights_pagination_iteration_bound(self) -> None:
+        # Defensive: a server that keeps returning fresh tokens forever
+        # must not be allowed to drive an infinite loop.
         client = self._make_client()
         mock_resp = MagicMock()
         mock_resp.ok = True
-        mock_resp.json.return_value = {"data": {"objects": [], "hasNextPage": False}}
-        with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
+        mock_resp.json.return_value = {
+            "data": {"objects": [{"id": "1"}], "nextPageToken": "never-ends"}
+        }
+        with (
+            patch.object(client.session, "get", return_value=mock_resp),
+            pytest.raises(RuntimeError, match="exceeded 100 pagination iterations"),
+        ):
             client.list_insights("status:new")
-            params = mock_get.call_args.kwargs["params"]
-            assert params["limit"] == 50
-            assert params["sort"] == "CREATED"
-            assert params["sortDir"] == "ASC"
 
     def test_extract_flare_events_empty(self) -> None:
         client = self._make_client()
