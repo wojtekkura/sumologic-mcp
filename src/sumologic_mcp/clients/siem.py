@@ -47,26 +47,6 @@ class SIEMClient:
         data = self._get(f"insights/{insight_id}")
         return data.get("data", data)
 
-    def list_insights(self, q: str, limit: int = 100) -> list[dict]:
-        """Walk paginated `/insights` results matching the Lucene `q` filter.
-
-        Stops when the server reports `hasNextPage == False` or returns a short
-        page. Bounded at 100 iterations to guard against a misbehaving server.
-        """
-        results: list[dict] = []
-        offset = 0
-        for _ in range(100):
-            resp = self._get("insights", {"q": q, "limit": limit, "offset": offset})
-            data = resp.get("data") or {}
-            objects = data.get("objects") or []
-            results.extend(objects)
-            if not objects or len(objects) < limit or data.get("hasNextPage") is False:
-                return results
-            offset += len(objects)
-        raise RuntimeError(
-            f"list_insights exceeded 100 pagination iterations (q={q!r}, limit={limit})"
-        )
-
     def assign_insight(self, insight_id: str, username: str) -> dict:
         return self._put(
             f"insights/{insight_id}/assignee",

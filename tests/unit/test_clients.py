@@ -93,64 +93,6 @@ class TestSIEMClient:
             call_args = mock_put.call_args
             assert "assignee" in call_args.kwargs.get("json", call_args[1].get("json", {}))
 
-    def test_list_insights_single_page(self) -> None:
-        client = self._make_client()
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {
-            "data": {"objects": [{"id": "1"}, {"id": "2"}], "hasNextPage": False}
-        }
-        with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
-            result = client.list_insights("status:new", limit=100)
-            assert [r["id"] for r in result] == ["1", "2"]
-            mock_get.assert_called_once()
-            params = mock_get.call_args.kwargs["params"]
-            assert params == {"q": "status:new", "limit": 100, "offset": 0}
-
-    def test_list_insights_paginates_across_two_pages(self) -> None:
-        client = self._make_client()
-        first = MagicMock()
-        first.ok = True
-        first.json.return_value = {
-            "data": {
-                "objects": [{"id": str(i)} for i in range(100)],
-                "hasNextPage": True,
-            }
-        }
-        second = MagicMock()
-        second.ok = True
-        second.json.return_value = {
-            "data": {"objects": [{"id": "100"}], "hasNextPage": False}
-        }
-        with patch.object(client.session, "get", side_effect=[first, second]) as mock_get:
-            result = client.list_insights("status:new", limit=100)
-            assert len(result) == 101
-            assert mock_get.call_count == 2
-            second_call_params = mock_get.call_args_list[1].kwargs["params"]
-            assert second_call_params["offset"] == 100
-
-    def test_list_insights_short_page_terminates(self) -> None:
-        client = self._make_client()
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {
-            "data": {"objects": [{"id": "1"}]}
-        }
-        with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
-            result = client.list_insights("status:new", limit=100)
-            assert len(result) == 1
-            mock_get.assert_called_once()
-
-    def test_list_insights_empty(self) -> None:
-        client = self._make_client()
-        mock_resp = MagicMock()
-        mock_resp.ok = True
-        mock_resp.json.return_value = {"data": {"objects": [], "hasNextPage": False}}
-        with patch.object(client.session, "get", return_value=mock_resp) as mock_get:
-            result = client.list_insights("status:new")
-            assert result == []
-            mock_get.assert_called_once()
-
     def test_extract_flare_events_empty(self) -> None:
         client = self._make_client()
         result = client.extract_flare_events({"signals": []})
