@@ -1,5 +1,7 @@
 """Tests for claim_incident and attach_note tools."""
 
+import re
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from sumologic_mcp.credentials import Credentials
@@ -13,6 +15,7 @@ from sumologic_mcp.tools.claim_incident import (
     _pick_template,
     claim_incident,
 )
+from sumologic_mcp.tools.list_new_insights import _build_query, list_new_insights
 
 
 def _make_creds() -> Credentials:
@@ -233,3 +236,124 @@ class TestAttachNote:
         result = attach_note(incident_id=100, text="note", author="custom@test.test")
 
         assert result["author"] == "custom@test.test"
+
+
+class TestBuildQuery:
+    def test_contains_required_clauses(self) -> None:
+        q, cutoff = _build_query(24)
+        assert "status:new" in q
+        assert "-_exists_:assignee" in q
+        assert f"created:>{cutoff}" in q
+
+    def test_cutoff_format(self) -> None:
+        _, cutoff = _build_query(24)
+        # ISO-8601 UTC, no microseconds, Z suffix
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", cutoff)
+
+    def test_cutoff_respects_window(self) -> None:
+        _, cutoff = _build_query(168)
+        parsed = datetime.strptime(cutoff, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
+        expected = datetime.now(UTC) - timedelta(hours=168)
+        delta = abs((expected - parsed).total_seconds())
+        assert delta < 5
+
+
+class TestListNewInsights:
+    @patch("sumologic_mcp.tools.list_new_insights.state")
+    def test_happy_path(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.list_insights.return_value = [
+            {
+                "readableId": "INSIGHT-1",
+                "name": "Suspicious Login",
+                "severity": "HIGH",
+                "created": "2026-05-06T10:00:00Z",
+                "signals": [
+                    {
+                        "id": "sig-1",
+                        "name": "Okta Login Failure",
+                        "severity": "HIGH",
+                        "timestamp": "2026-05-06T09:59:00Z",
+                        "extra": "should not appear",
+                    },
+                    {
+                        "id": "sig-2",
+                        "name": "Geo Anomaly",
+                        "severity": "MEDIUM",
+                        "timestamp": "2026-05-06T09:58:00Z",
+                    },
+                ],
+            }
+        ]
+
+        result = list_new_insights()
+
+        assert result["count"] == 1
+        assert result["since_hours"] == 24
+        ins = result["insights"][0]
+        assert ins["insight_id"] == "INSIGHT-1"
+        assert ins["name"] == "Suspicious Login"
+        assert ins["severity"] == "HIGH"
+        assert ins["created"] == "2026-05-06T10:00:00Z"
+        assert ins["signal_count"] == 2
+        assert ins["signals"][0] == {
+            "id": "sig-1",
+            "name": "Okta Login Failure",
+            "severity": "HIGH",
+            "timestamp": "2026-05-06T09:59:00Z",
+        }
+        assert "extra" not in ins["signals"][0]
+
+    @patch("sumologic_mcp.tools.list_new_insights.state")
+    def test_empty(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.list_insights.return_value = []
+
+        result = list_new_insights()
+
+        assert result["count"] == 0
+        assert result["insights"] == []
+        assert "status:new" in result["query"]
+
+    @patch("sumologic_mcp.tools.list_new_insights.state")
+    def test_since_hours_override_propagates_to_query(
+        self, mock_state: MagicMock
+    ) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.list_insights.return_value = []
+
+        list_new_insights(since_hours=168)
+
+        sent_q = mock_siem.list_insights.call_args.args[0]
+        m = re.search(r"created:>(\S+)", sent_q)
+        assert m is not None
+        cutoff = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
+        expected = datetime.now(UTC) - timedelta(hours=168)
+        assert abs((expected - cutoff).total_seconds()) < 5
+
+    @patch("sumologic_mcp.tools.list_new_insights.state")
+    def test_missing_signals_key(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.list_insights.return_value = [
+            {"readableId": "INSIGHT-2", "name": "No Signals"}
+        ]
+
+        result = list_new_insights()
+
+        assert result["insights"][0]["signal_count"] == 0
+        assert result["insights"][0]["signals"] == []
+
+    @patch("sumologic_mcp.tools.list_new_insights.state")
+    def test_insight_id_falls_back_to_id(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.list_insights.return_value = [
+            {"id": "raw-uuid-abc", "name": "No Readable Id"}
+        ]
+
+        result = list_new_insights()
+
+        assert result["insights"][0]["insight_id"] == "raw-uuid-abc"
