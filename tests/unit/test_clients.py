@@ -83,6 +83,67 @@ class TestSIEMClient:
         ):
             client.get_insight("INSIGHT-999")
 
+    def test_add_comment_hits_documented_endpoint_with_body_payload(self) -> None:
+        # Spec: POST /sec/v1/insights/{id}/comments with {"body": "<text>"}.
+        # Verifies the closure-note/comment endpoint contract — Sumo expects
+        # the field name `body`, not `text` or `comment`.
+        client = self._make_client()
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.content = b'{"id":99,"body":"hello"}'
+        mock_resp.json.return_value = {"id": 99, "body": "hello"}
+        with patch.object(client.session, "post", return_value=mock_resp) as mock_post:
+            result = client.add_comment("INSIGHT-30105", "hello")
+            assert result["id"] == 99
+            url = mock_post.call_args.args[0]
+            assert url.endswith("/insights/INSIGHT-30105/comments")
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload == {"body": "hello"}
+
+    def test_set_insight_status_closed_includes_resolution(self) -> None:
+        # Spec: PUT /sec/v1/insights/{id}/status with
+        # {"status":"closed","resolution":"<reason>"} when closing.
+        # The resolution field is the structured close-reason ("False
+        # Positive", "Resolved", etc.) — distinct from a free-text comment.
+        client = self._make_client()
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.content = b"{}"
+        mock_resp.json.return_value = {}
+        with patch.object(client.session, "put", return_value=mock_resp) as mock_put:
+            client.set_insight_status("INSIGHT-30105", "closed", resolution="False Positive")
+            url = mock_put.call_args.args[0]
+            assert url.endswith("/insights/INSIGHT-30105/status")
+            payload = mock_put.call_args.kwargs["json"]
+            assert payload == {"status": "closed", "resolution": "False Positive"}
+
+    def test_set_insight_status_drops_resolution_when_not_closed(self) -> None:
+        # Sumo only honors `resolution` when status == "closed". Sending
+        # it on an inprogress/new transition would be silently ignored
+        # by the server — drop it client-side to keep the payload clean.
+        client = self._make_client()
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.content = b"{}"
+        mock_resp.json.return_value = {}
+        with patch.object(client.session, "put", return_value=mock_resp) as mock_put:
+            client.set_insight_status("INSIGHT-30105", "inprogress", resolution="Resolved")
+            payload = mock_put.call_args.kwargs["json"]
+            assert payload == {"status": "inprogress"}
+            assert "resolution" not in payload
+
+    def test_set_insight_status_no_resolution_when_omitted(self) -> None:
+        # Back-compat: existing callers (claim_incident) pass status only.
+        client = self._make_client()
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.content = b"{}"
+        mock_resp.json.return_value = {}
+        with patch.object(client.session, "put", return_value=mock_resp) as mock_put:
+            client.set_insight_status("INSIGHT-30105", "closed")
+            payload = mock_put.call_args.kwargs["json"]
+            assert payload == {"status": "closed"}
+
     def test_assign_insight(self) -> None:
         client = self._make_client()
         mock_resp = MagicMock()
