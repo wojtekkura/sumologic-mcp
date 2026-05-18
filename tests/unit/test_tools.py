@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from sumologic_mcp.credentials import Credentials
+from sumologic_mcp.tools.add_insight_comment import add_insight_comment
 from sumologic_mcp.tools.attach_note import attach_note
 from sumologic_mcp.tools.claim_incident import (
     _dominant_source,
@@ -16,6 +17,7 @@ from sumologic_mcp.tools.claim_incident import (
     claim_incident,
 )
 from sumologic_mcp.tools.list_new_insights import _build_query, list_new_insights
+from sumologic_mcp.tools.resolve_insight import resolve_insight
 
 
 def _make_creds() -> Credentials:
@@ -236,6 +238,111 @@ class TestAttachNote:
         result = attach_note(incident_id=100, text="note", author="custom@test.test")
 
         assert result["author"] == "custom@test.test"
+
+
+class TestAddInsightComment:
+    @patch("sumologic_mcp.tools.add_insight_comment.state")
+    def test_posts_comment_and_returns_id(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.add_comment.return_value = {"id": 777, "body": "hi"}
+
+        result = add_insight_comment("INSIGHT-30105", "hi")
+
+        # The tool MUST call the underlying client; this is the
+        # "comment was added" assertion.
+        mock_siem.add_comment.assert_called_once_with("INSIGHT-30105", "hi")
+        assert result == {"comment_id": 777, "insight_id": "INSIGHT-30105"}
+
+    @patch("sumologic_mcp.tools.add_insight_comment.state")
+    def test_handles_missing_id_in_response(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.add_comment.return_value = {}
+
+        result = add_insight_comment("INSIGHT-30105", "hi")
+
+        assert result["comment_id"] is None
+        assert result["insight_id"] == "INSIGHT-30105"
+
+
+class TestResolveInsight:
+    @patch("sumologic_mcp.tools.resolve_insight.state")
+    def test_resolves_with_closure_note_fires_both_endpoints_in_order(
+        self, mock_state: MagicMock
+    ) -> None:
+        # End-to-end contract: when a closure_note is supplied,
+        # resolve_insight MUST both add the comment AND set the status
+        # to closed with the resolution — in that order.
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.add_comment.return_value = {"id": 101, "body": "closing"}
+        mock_siem.set_insight_status.return_value = {}
+
+        result = resolve_insight(
+            "INSIGHT-30105",
+            resolution="False Positive",
+            closure_note="benign — internal test",
+        )
+
+        # Comment landed.
+        mock_siem.add_comment.assert_called_once_with(
+            "INSIGHT-30105", "benign — internal test"
+        )
+        # Closure resolution landed on the status endpoint.
+        mock_siem.set_insight_status.assert_called_once_with(
+            "INSIGHT-30105", "closed", resolution="False Positive"
+        )
+        # Comment first, then status — order matters for audit trail.
+        call_names = [c[0] for c in mock_siem.method_calls]
+        assert call_names.index("add_comment") < call_names.index("set_insight_status")
+
+        assert result == {
+            "insight_id": "INSIGHT-30105",
+            "resolution": "False Positive",
+            "comment_id": 101,
+            "status": "closed",
+        }
+
+    @patch("sumologic_mcp.tools.resolve_insight.state")
+    def test_resolves_without_closure_note_skips_comment(
+        self, mock_state: MagicMock
+    ) -> None:
+        # No closure_note → no comment API call, but status MUST still close.
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.set_insight_status.return_value = {}
+
+        result = resolve_insight("INSIGHT-30096", resolution="Resolved")
+
+        mock_siem.add_comment.assert_not_called()
+        mock_siem.set_insight_status.assert_called_once_with(
+            "INSIGHT-30096", "closed", resolution="Resolved"
+        )
+        assert result["comment_id"] is None
+        assert result["resolution"] == "Resolved"
+        assert result["status"] == "closed"
+
+    @patch("sumologic_mcp.tools.resolve_insight.state")
+    def test_resolution_defaults_to_resolved(self, mock_state: MagicMock) -> None:
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.set_insight_status.return_value = {}
+
+        result = resolve_insight("INSIGHT-30105")
+
+        mock_siem.set_insight_status.assert_called_once_with(
+            "INSIGHT-30105", "closed", resolution="Resolved"
+        )
+        assert result["resolution"] == "Resolved"
+
+    @patch("sumologic_mcp.tools.resolve_insight.state")
+    def test_passes_through_custom_subresolution(self, mock_state: MagicMock) -> None:
+        # Custom sub-resolutions configured at the tenant level must
+        # pass through verbatim — no client-side allowlist.
+        mock_state.siem.return_value = mock_siem = MagicMock()
+        mock_siem.set_insight_status.return_value = {}
+
+        resolve_insight("INSIGHT-30105", resolution="Resolved - Tuned Rule")
+
+        mock_siem.set_insight_status.assert_called_once_with(
+            "INSIGHT-30105", "closed", resolution="Resolved - Tuned Rule"
+        )
 
 
 class TestBuildQuery:

@@ -110,8 +110,20 @@ class SIEMClient:
             {"assignee": {"type": "USER", "value": username}},
         )
 
-    def set_insight_status(self, insight_id: str, status: str) -> dict:
-        return self._put(f"insights/{insight_id}/status", {"status": status})
+    def set_insight_status(
+        self, insight_id: str, status: str, resolution: str | None = None
+    ) -> dict:
+        payload: dict = {"status": status}
+        # `resolution` is the structured close-reason ("False Positive",
+        # "Duplicate", "Resolved", "No Action", or a configured custom
+        # sub-resolution). Sumo only honors it when status == "closed".
+        if status == self.STATUS_CLOSED and resolution:
+            payload["resolution"] = resolution
+        return self._put(f"insights/{insight_id}/status", payload)
+
+    def add_comment(self, insight_id: str, body: str) -> dict:
+        result = self._post(f"insights/{insight_id}/comments", {"body": body})
+        return result.get("data", result)
 
     def link_soar_incident(
         self, insight_id: str, soar_incident_id: int, name: str, assignee: str = ""
