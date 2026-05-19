@@ -16,7 +16,12 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="Run the MCP server (default).")
     sub.add_parser(
-        "setup", help="Interactively store Sumo credentials in Windows Credential Manager."
+        "setup",
+        help=(
+            "Interactively store Sumo credentials in the system keyring "
+            "(Windows Credential Manager / macOS Keychain / Linux libsecret), "
+            "or print env-var setup instructions on headless hosts."
+        ),
     )
 
     args = parser.parse_args()
