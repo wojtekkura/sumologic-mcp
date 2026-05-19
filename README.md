@@ -11,8 +11,16 @@ Built on the official [`mcp`](https://pypi.org/project/mcp/) Python SDK using `F
 
 ### Install uv
 
+**Windows (PowerShell):**
+
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**Linux / macOS (bash/zsh):**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ## Requirements
@@ -21,32 +29,57 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 - Sumo Logic API credentials (access ID + access key) with SIEM and Cloud SOAR scopes
 - Your Sumo Logic API region (e.g. `us1`, `us2`, `eu`, `de`, `au`, `jp`, `ca`, `in`)
 
-## 1. Store your credentials in Windows Credential Manager
+## 1. Store your credentials
 
-Sumo Logic requires two credentials (access ID and access key). Run these once in PowerShell:
+Sumo Logic requires two secrets (access ID + access key). Pick **one** of these
+paths depending on your platform:
+
+### Option A — System keyring (Windows / macOS / Linux desktop)
+
+The secrets live in the OS-native keyring (Windows Credential Manager, macOS
+Keychain, Linux libsecret) and are read automatically at startup.
+
+**Windows (PowerShell):**
 
 ```powershell
 cmdkey /generic:"access_id@sumologic-mcp" /user:"access_id" /pass:"your-access-id-here"
 cmdkey /generic:"access_key@sumologic-mcp" /user:"access_key" /pass:"your-access-key-here"
 ```
 
-To verify:
+> Note: `cmdkey` is the canonical Windows path. macOS / Linux desktop users
+> can use the cross-platform `keyring` CLI instead (shipped with the
+> `keyring` package): `keyring set sumologic-mcp access_id`.
 
-```powershell
-cmdkey /list:"access_id@sumologic-mcp"
-cmdkey /list:"access_key@sumologic-mcp"
+**macOS / Linux desktop:**
+
+```bash
+keyring set sumologic-mcp access_id   # paste access ID, press Enter
+keyring set sumologic-mcp access_key  # paste access key, press Enter
 ```
 
-To remove:
+Or run the interactive helper (any OS):
 
-```powershell
-cmdkey /delete:"access_id@sumologic-mcp"
-cmdkey /delete:"access_key@sumologic-mcp"
+```bash
+uvx --from "sumologic-mcp @ https://github.com/wojtekkura/sumologic-mcp/archive/refs/heads/master.tar.gz" sumologic-mcp setup
 ```
 
-## 2. Configure Claude Desktop
+### Option B — Environment variables (headless Linux, Docker, CI)
 
-Edit `%APPDATA%\Claude\claude_desktop_config.json`:
+On a headless box with no D-Bus / unlocked keyring, set the secrets as env
+vars in your MCP host config or shell. The `SUMO_ACCESS_ID` / `SUMO_ACCESS_KEY`
+env vars win over any value in the keyring.
+
+```bash
+export SUMO_ACCESS_ID='your-access-id'
+export SUMO_ACCESS_KEY='your-access-key'
+```
+
+## 2. Configure your MCP host
+
+### Claude Desktop (Windows / macOS)
+
+Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 ```json
 {
@@ -55,7 +88,7 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
       "command": "uvx",
       "args": [
         "--from",
-        "sumologic-mcp @ https://github.com/wojtekkura/sumologic-mcp/archive/refs/heads/main.tar.gz",
+        "sumologic-mcp @ https://github.com/wojtekkura/sumologic-mcp/archive/refs/heads/master.tar.gz",
         "sumologic-mcp"
       ],
       "env": {
@@ -68,15 +101,41 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
 }
 ```
 
-| Variable | Description |
-|---|---|
-| `SUMO_API_REGION` | Region code: `us1` `us2` `eu` `de` `au` `jp` `ca` `in` |
-| `ANALYST_USERNAME` | Sumo username — used as SIEM assignee and default note author |
-| `SOAR_OWNER_ID` | Numeric Cloud SOAR owner ID for created incidents |
+### Headless Linux / Docker / any MCP client
 
-Credentials are read automatically from Windows Credential Manager at startup — no secrets in the config file.
+Same shape, but inline the secrets via env vars (no keyring needed):
 
-Restart Claude Desktop after saving the file.
+```json
+{
+  "mcpServers": {
+    "sumologic": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "sumologic-mcp @ https://github.com/wojtekkura/sumologic-mcp/archive/refs/heads/master.tar.gz",
+        "sumologic-mcp"
+      ],
+      "env": {
+        "SUMO_ACCESS_ID": "your-access-id",
+        "SUMO_ACCESS_KEY": "your-access-key",
+        "SUMO_API_REGION": "de",
+        "ANALYST_USERNAME": "your-sumo-username",
+        "SOAR_OWNER_ID": "your-numeric-owner-id"
+      }
+    }
+  }
+}
+```
+
+| Variable | Required? | Description |
+|---|---|---|
+| `SUMO_ACCESS_ID` | If no keyring | Access ID secret. Overrides the keyring value when both are present. |
+| `SUMO_ACCESS_KEY` | If no keyring | Access key secret. Overrides the keyring value when both are present. |
+| `SUMO_API_REGION` | Yes | Region code: `us1` `us2` `eu` `de` `au` `jp` `ca` `in` |
+| `ANALYST_USERNAME` | Yes | Sumo username — used as SIEM assignee and default note author |
+| `SOAR_OWNER_ID` | Yes | Numeric Cloud SOAR owner ID for created incidents |
+
+Restart the MCP host after saving the config.
 
 ## Available Tools
 
