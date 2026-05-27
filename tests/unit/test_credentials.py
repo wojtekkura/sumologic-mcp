@@ -223,3 +223,44 @@ class TestEnvVarFallback:
             creds = load_credentials()
             assert creds.access_id == "keyring-id"
             assert creds.access_key == "keyring-key"
+
+
+class TestCollectorUrl:
+    """SUMO_COLLECTOR_URL is optional — only required when ingest_logs
+    is invoked. Loader must populate Credentials.collector_url from env."""
+
+    def test_collector_url_loaded_when_env_set(self) -> None:
+        mock = _mock_keyring()
+        env = {
+            **_BASE_ENV,
+            "SUMO_COLLECTOR_URL": "https://collectors.de.sumologic.com/receiver/v1/http/TOKEN",
+        }
+        with (
+            patch("sumologic_mcp.credentials.keyring", mock),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            creds = load_credentials()
+            assert creds.collector_url == (
+                "https://collectors.de.sumologic.com/receiver/v1/http/TOKEN"
+            )
+
+    def test_collector_url_none_when_env_unset(self) -> None:
+        # Existing deployments without SUMO_COLLECTOR_URL must still load —
+        # the field is optional, ingest_logs raises only at call time.
+        mock = _mock_keyring()
+        with (
+            patch("sumologic_mcp.credentials.keyring", mock),
+            patch.dict(os.environ, _BASE_ENV, clear=True),
+        ):
+            creds = load_credentials()
+            assert creds.collector_url is None
+
+    def test_blank_collector_url_treated_as_unset(self) -> None:
+        mock = _mock_keyring()
+        env = {**_BASE_ENV, "SUMO_COLLECTOR_URL": "   "}
+        with (
+            patch("sumologic_mcp.credentials.keyring", mock),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            creds = load_credentials()
+            assert creds.collector_url is None

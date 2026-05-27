@@ -6,6 +6,7 @@ import pytest
 import requests
 
 from sumologic_mcp.clients.base import REGION_URLS, get_base_url, make_session
+from sumologic_mcp.clients.collector import CollectorClient
 from sumologic_mcp.clients.siem import SIEMClient
 from sumologic_mcp.clients.soar import SOARClient
 from sumologic_mcp.credentials import Credentials
@@ -331,3 +332,93 @@ class TestSOARClient:
         with patch.object(client.session, "post", return_value=mock_resp):
             results = client.search_incidents()
             assert len(results) == 1
+
+
+class TestCollectorClient:
+    """Sumo HTTP Source ingest endpoint. URL contains an embedded token —
+    auth is the URL itself; no basic auth header is sent."""
+
+    URL = "https://collectors.de.sumologic.com/receiver/v1/http/FAKE_TOKEN"
+
+    def _ok_resp(self) -> MagicMock:
+        r = MagicMock()
+        r.ok = True
+        r.status_code = 200
+        r.text = ""
+        return r
+
+    def test_single_dict_serializes_as_json_object(self) -> None:
+        client = CollectorClient()
+        with patch.object(client.session, "post", return_value=self._ok_resp()) as mock_post:
+            result = client.post(self.URL, {"event": "login", "user": "alice"})
+            assert result == {
+                "status_code": 200,
+                "records_sent": 1,
+                "bytes_sent": len(b'{"event":"login","user":"alice"}'),
+            }
+            sent_body = mock_post.call_args.kwargs["data"]
+            # Single JSON object, no trailing newline.
+            assert sent_body == b'{"event":"login","user":"alice"}'
+            assert mock_post.call_args.kwargs["headers"]["Content-Type"] == "application/json"
+
+    def test_list_serializes_as_ndjson(self) -> None:
+        # Spec: a list of records → one JSON object per line, newline-
+        # delimited. This is what Sumo's HTTP Source expects for bulk.
+        client = CollectorClient()
+        with patch.object(client.session, "post", return_value=self._ok_resp()) as mock_post:
+            result = client.post(self.URL, [{"a": 1}, {"a": 2}, {"a": 3}])
+            assert result["records_sent"] == 3
+            sent_body = mock_post.call_args.kwargs["data"].decode("utf-8")
+            lines = sent_body.split("\n")
+            assert lines == ['{"a":1}', '{"a":2}', '{"a":3}']
+
+    def test_url_is_not_echoed_in_http_error(self) -> None:
+        # Defense: the URL contains a secret token. Error messages must
+        # never include it.
+        client = CollectorClient()
+        bad = MagicMock()
+        bad.ok = False
+        bad.status_code = 401
+        bad.text = "unauthorized"
+        with patch.object(client.session, "post", return_value=bad):
+            with pytest.raises(requests.HTTPError) as exc:
+                client.post(self.URL, {"x": 1})
+            assert "FAKE_TOKEN" not in str(exc.value)
+            assert "401" in str(exc.value)
+
+    def test_optional_metadata_headers(self) -> None:
+        client = CollectorClient()
+        with patch.object(client.session, "post", return_value=self._ok_resp()) as mock_post:
+            client.post(
+                self.URL,
+                {"x": 1},
+                source_category="security/test",
+                source_name="sumologic-mcp",
+                source_host="analyst-laptop",
+            )
+            h = mock_post.call_args.kwargs["headers"]
+            assert h["X-Sumo-Category"] == "security/test"
+            assert h["X-Sumo-Name"] == "sumologic-mcp"
+            assert h["X-Sumo-Host"] == "analyst-laptop"
+
+    def test_rejects_empty_list(self) -> None:
+        client = CollectorClient()
+        with pytest.raises(ValueError, match="empty list"):
+            client.post(self.URL, [])
+
+    def test_rejects_non_dict_in_list(self) -> None:
+        client = CollectorClient()
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            client.post(self.URL, [{"ok": 1}, "not a dict"])  # type: ignore[list-item]
+
+    def test_rejects_wrong_payload_type(self) -> None:
+        client = CollectorClient()
+        with pytest.raises(TypeError, match="dict or list"):
+            client.post(self.URL, "raw string")  # type: ignore[arg-type]
+
+    def test_no_basic_auth_sent(self) -> None:
+        # The collector URL IS the auth. Make sure we didn't accidentally
+        # bolt basic auth onto the session (which would leak the
+        # analyst's SIEM creds to a different endpoint).
+        client = CollectorClient()
+        assert client.session.auth is None

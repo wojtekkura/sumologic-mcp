@@ -26,6 +26,9 @@ class Credentials:
     region: str
     analyst_username: str
     soar_owner_id: int
+    # Optional — only required if `ingest_logs` is invoked. Read from
+    # SUMO_COLLECTOR_URL env var. URL contains an embedded token (secret).
+    collector_url: str | None = None
 
 
 def _missing_secret(item: str, env_var: str) -> str:
@@ -81,12 +84,15 @@ def load_credentials() -> Credentials:
     except ValueError as e:
         raise RuntimeError(f"SOAR_OWNER_ID must be an integer; got '{owner_raw}'") from e
 
+    collector_url = os.environ.get("SUMO_COLLECTOR_URL", "").strip() or None
+
     return Credentials(
         access_id=access_id,
         access_key=access_key,
         region=region,
         analyst_username=analyst,
         soar_owner_id=owner_id,
+        collector_url=collector_url,
     )
 
 
