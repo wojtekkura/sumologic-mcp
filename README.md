@@ -134,6 +134,7 @@ Same shape, but inline the secrets via env vars (no keyring needed):
 | `SUMO_API_REGION` | Yes | Region code: `us1` `us2` `eu` `de` `au` `jp` `ca` `in` |
 | `ANALYST_USERNAME` | Yes | Sumo username — used as SIEM assignee and default note author |
 | `SOAR_OWNER_ID` | Yes | Numeric Cloud SOAR owner ID for created incidents |
+| `SUMO_COLLECTOR_URL` | Only for `ingest_logs` | Full HTTP Source URL — `https://collectors.<region>.sumologic.com/receiver/v1/http/<token>`. URL contains an embedded token (secret); pre-configure here rather than passing on every call. |
 
 Restart the MCP host after saving the config.
 
@@ -141,8 +142,12 @@ Restart the MCP host after saving the config.
 
 | Tool | Description |
 |------|-------------|
-| `claim_incident` | Fetch SIEM Insight, assign analyst, create/link SOAR incident, return structured triage view |
-| `attach_note` | Attach a markdown note to a Cloud SOAR incident |
+| `claim_incident` | Fetch SIEM Insight, assign analyst, set in-progress, create/link SOAR incident, return structured triage view |
+| `list_new_insights` | List new + unassigned SIEM Insights within a configurable lookback window |
+| `add_insight_comment` | Post a free-text comment to a SIEM Insight (`POST /sec/v1/insights/{id}/comments`) |
+| `resolve_insight` | Close a SIEM Insight with a structured `resolution` (False Positive / Resolved / No Action / Duplicate / custom) and optional closure-note comment |
+| `attach_note` | Attach a markdown note (rendered to HTML) to a Cloud SOAR incident |
+| `ingest_logs` | Push one or many JSON records to a Sumo Logic HTTP Source collector (`SUMO_COLLECTOR_URL`). Single record → JSON; list → NDJSON. Optional `X-Sumo-Category` / `-Name` / `-Host` metadata headers. |
 
 ## License
 

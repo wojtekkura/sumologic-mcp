@@ -4,6 +4,8 @@ import re
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from sumologic_mcp.credentials import Credentials
 from sumologic_mcp.tools.add_insight_comment import add_insight_comment
 from sumologic_mcp.tools.attach_note import attach_note
@@ -16,17 +18,19 @@ from sumologic_mcp.tools.claim_incident import (
     _pick_template,
     claim_incident,
 )
+from sumologic_mcp.tools.ingest_logs import ingest_logs
 from sumologic_mcp.tools.list_new_insights import _build_query, list_new_insights
 from sumologic_mcp.tools.resolve_insight import resolve_insight
 
 
-def _make_creds() -> Credentials:
+def _make_creds(collector_url: str | None = None) -> Credentials:
     return Credentials(
         access_id="test-id",
         access_key="test-key",
         region="us1",
         analyst_username="analyst@test.test",
         soar_owner_id=42,
+        collector_url=collector_url,
     )
 
 
@@ -343,6 +347,111 @@ class TestResolveInsight:
         mock_siem.set_insight_status.assert_called_once_with(
             "INSIGHT-30105", "closed", resolution="Resolved - Tuned Rule"
         )
+
+
+class TestIngestLogs:
+    """Tool-level wrapper around CollectorClient.post.
+
+    Verifies the env-var → arg-override URL resolution and that the
+    collector client gets the payload + optional metadata headers
+    unchanged."""
+
+    @patch("sumologic_mcp.tools.ingest_logs.state")
+    def test_uses_env_var_url_when_no_arg(self, mock_state: MagicMock) -> None:
+        creds = _make_creds(collector_url="https://collectors.de.sumologic.com/receiver/v1/http/ENV_TOKEN")
+        mock_state.creds.return_value = creds
+        mock_state.collector.return_value = mock_collector = MagicMock()
+        mock_collector.post.return_value = {
+            "status_code": 200,
+            "records_sent": 1,
+            "bytes_sent": 42,
+        }
+
+        result = ingest_logs({"event": "test"})
+
+        mock_collector.post.assert_called_once_with(
+            "https://collectors.de.sumologic.com/receiver/v1/http/ENV_TOKEN",
+            {"event": "test"},
+            source_category=None,
+            source_name=None,
+            source_host=None,
+        )
+        assert result["status_code"] == 200
+
+    @patch("sumologic_mcp.tools.ingest_logs.state")
+    def test_explicit_arg_overrides_env(self, mock_state: MagicMock) -> None:
+        creds = _make_creds(collector_url="https://collectors.de.sumologic.com/receiver/v1/http/ENV_TOKEN")
+        mock_state.creds.return_value = creds
+        mock_state.collector.return_value = mock_collector = MagicMock()
+        mock_collector.post.return_value = {
+            "status_code": 200,
+            "records_sent": 1,
+            "bytes_sent": 10,
+        }
+
+        ingest_logs(
+            {"event": "test"},
+            collector_url="https://other.sumologic.com/receiver/v1/http/OVERRIDE",
+        )
+
+        # The override URL must reach the client, NOT the env-var URL.
+        actual_url = mock_collector.post.call_args.args[0]
+        assert actual_url == "https://other.sumologic.com/receiver/v1/http/OVERRIDE"
+
+    @patch("sumologic_mcp.tools.ingest_logs.state")
+    def test_no_url_anywhere_raises_with_helpful_message(
+        self, mock_state: MagicMock
+    ) -> None:
+        creds = _make_creds(collector_url=None)
+        mock_state.creds.return_value = creds
+        mock_state.collector.return_value = MagicMock()
+
+        with pytest.raises(RuntimeError, match="SUMO_COLLECTOR_URL"):
+            ingest_logs({"event": "test"})
+
+    @patch("sumologic_mcp.tools.ingest_logs.state")
+    def test_list_payload_passed_through_unchanged(
+        self, mock_state: MagicMock
+    ) -> None:
+        # The tool must not normalize or split a list — the client
+        # decides how to serialize (NDJSON). Tool's job is dispatch only.
+        creds = _make_creds(collector_url="https://x.test/receiver/v1/http/T")
+        mock_state.creds.return_value = creds
+        mock_state.collector.return_value = mock_collector = MagicMock()
+        mock_collector.post.return_value = {
+            "status_code": 200,
+            "records_sent": 3,
+            "bytes_sent": 99,
+        }
+
+        records = [{"a": 1}, {"a": 2}, {"a": 3}]
+        ingest_logs(records)
+
+        passed_payload = mock_collector.post.call_args.args[1]
+        assert passed_payload is records  # exact object, no copy/transform
+
+    @patch("sumologic_mcp.tools.ingest_logs.state")
+    def test_metadata_headers_forwarded(self, mock_state: MagicMock) -> None:
+        creds = _make_creds(collector_url="https://x.test/receiver/v1/http/T")
+        mock_state.creds.return_value = creds
+        mock_state.collector.return_value = mock_collector = MagicMock()
+        mock_collector.post.return_value = {
+            "status_code": 200,
+            "records_sent": 1,
+            "bytes_sent": 5,
+        }
+
+        ingest_logs(
+            {"x": 1},
+            source_category="security/sumologic-mcp/test",
+            source_name="sumologic-mcp",
+            source_host="analyst-laptop",
+        )
+
+        kwargs = mock_collector.post.call_args.kwargs
+        assert kwargs["source_category"] == "security/sumologic-mcp/test"
+        assert kwargs["source_name"] == "sumologic-mcp"
+        assert kwargs["source_host"] == "analyst-laptop"
 
 
 class TestBuildQuery:

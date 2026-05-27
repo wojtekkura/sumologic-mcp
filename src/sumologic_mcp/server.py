@@ -4,6 +4,7 @@ from sumologic_mcp.clients import state
 from sumologic_mcp.tools.add_insight_comment import add_insight_comment
 from sumologic_mcp.tools.attach_note import attach_note
 from sumologic_mcp.tools.claim_incident import claim_incident
+from sumologic_mcp.tools.ingest_logs import ingest_logs
 from sumologic_mcp.tools.list_new_insights import list_new_insights
 from sumologic_mcp.tools.resolve_insight import resolve_insight
 
@@ -13,6 +14,7 @@ mcp.add_tool(attach_note)
 mcp.add_tool(list_new_insights)
 mcp.add_tool(add_insight_comment)
 mcp.add_tool(resolve_insight)
+mcp.add_tool(ingest_logs)
 
 
 def run_stdio() -> None:
